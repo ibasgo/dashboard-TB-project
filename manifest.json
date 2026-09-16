@@ -9,6 +9,11 @@
     "content_category": null,
     "has_parameters": false
   },
+  "environment": {
+    "r": {
+      "requires": "~=4.6.0"
+    }
+  },
   "quarto": {
     "version": "1.10.18",
     "engines": ["markdown", "knitr"]
@@ -2641,6 +2646,37 @@
         "RemoteSha": "2.1.2"
       }
     },
+    "renv": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "renv",
+        "Type": "Package",
+        "Title": "Project Environments",
+        "Version": "1.2.4",
+        "Authors@R": "c(\n    person(\"Kevin\", \"Ushey\", role = c(\"aut\", \"cre\"), email = \"kevin@rstudio.com\",\n           comment = c(ORCID = \"0000-0003-2880-7407\")),\n    person(\"Hadley\", \"Wickham\", role = c(\"aut\"), email = \"hadley@rstudio.com\",\n           comment = c(ORCID = \"0000-0003-4757-117X\")),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"))\n    )",
+        "Description": "A dependency management toolkit for R. Using 'renv', you can create\n    and manage project-local R libraries, save the state of these libraries to\n    a 'lockfile', and later restore your library as required. Together, these\n    tools can help make your projects more isolated, portable, and reproducible.",
+        "License": "MIT + file LICENSE",
+        "URL": "https://rstudio.github.io/renv/, https://github.com/rstudio/renv",
+        "BugReports": "https://github.com/rstudio/renv/issues",
+        "Imports": "utils",
+        "Suggests": "BiocManager, cli, compiler, covr, cpp11, curl, devtools,\ngenerics, gitcreds, jsonlite, jsonvalidate, knitr, miniUI,\nmodules, packrat, pak, R6, remotes, reticulate, rmarkdown,\nrstudioapi, shiny, testthat, uuid, waldo, yaml, webfakes",
+        "Encoding": "UTF-8",
+        "VignetteBuilder": "knitr",
+        "Config/Needs/website": "tidyverse/tidytemplate",
+        "Config/testthat/edition": "3",
+        "Config/testthat/parallel": "true",
+        "Config/testthat/start-first": "bioconductor,python,install,restore,snapshot,retrieve,remotes",
+        "Config/roxygen2/version": "8.0.0",
+        "NeedsCompilation": "no",
+        "Packaged": "2026-08-03 20:47:11 UTC; kevin",
+        "Author": "Kevin Ushey [aut, cre] (ORCID: <https://orcid.org/0000-0003-2880-7407>),\n  Hadley Wickham [aut] (ORCID: <https://orcid.org/0000-0003-4757-117X>),\n  Posit Software, PBC [cph, fnd]",
+        "Maintainer": "Kevin Ushey <kevin@rstudio.com>",
+        "Repository": "CRAN",
+        "Date/Publication": "2026-08-03 23:10:02 UTC",
+        "Built": "R 4.6.1; ; 2026-08-03 23:30:41 UTC; unix"
+      }
+    },
     "reprex": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -3788,10 +3824,13 @@
       "checksum": "4c932b78a4742469ae6b09472d037853"
     },
     ".posit/publish/dashboard-TB-project-KK04.toml": {
-      "checksum": "d17492781019ca380a4ab84945d9e0f9"
+      "checksum": "9338268e218a00d806ef2bebb3730a88"
     },
     ".posit/publish/deployments/deployment-GK2M.toml": {
-      "checksum": "834a82b68a5f0d9dccd5ed919e581e64"
+      "checksum": "b92c6f93dad631de113a1569f65ec925"
+    },
+    ".Rprofile": {
+      "checksum": "495d4668a87a83c76baa3bbf07cc09cd"
     },
     "assets/styles.scss": {
       "checksum": "9242148b02335f2cabbada0d5025295e"
@@ -3824,10 +3863,13 @@
       "checksum": "709481a77d5ecb441f554ea535617907"
     },
     "R/syntax.R": {
-      "checksum": "1b8b87505b31704c810e1b439f4ab3c8"
+      "checksum": "3a7b24af4e97e8d04e596241e01d116e"
     },
     "README.txt": {
       "checksum": "e8e4db115d47f5ead1dd0f6a2916e5db"
+    },
+    "renv.lock": {
+      "checksum": "fbb4ff8de91494aabe3369b9f6503e72"
     },
     "tb-dashboard-v5-3_files/figure-html/unnamed-chunk-1-1.png": {
       "checksum": "3fb42679828a0284c7b5c0c206405144"
