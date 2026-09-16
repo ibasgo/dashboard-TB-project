@@ -1,0 +1,104 @@
+/*-- scss:defaults --*/
+$font-size-root: 15px;
+
+/*-- scss:rules --*/
+
+:root {
+  --tb-navy: #173B57;
+  --tb-blue: #2F80ED;
+  --tb-teal: #2A9D8F;
+  --tb-orange: #F4A261;
+  --tb-red: #D1495B;
+  --tb-soft-bg: #F5F8FA;
+}
+
+body {
+  background: var(--tb-soft-bg);
+}
+
+.navbar-brand {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--tb-navy) !important;
+}
+
+.navbar .navbar-nav .nav-link {
+  font-weight: 500;
+}
+
+.navbar .navbar-nav .nav-link.active {
+  color: var(--tb-blue) !important;
+  font-weight: 700;
+}
+
+.valuebox {
+  border-radius: 0.85rem;
+  min-height: 178px;
+  box-shadow: 0 4px 16px rgba(23, 59, 87, 0.08);
+  border: 0;
+}
+
+.valuebox.bg-primary {
+  background: linear-gradient(135deg, #2F80ED 0%, #4FA3F7 100%) !important;
+}
+
+.valuebox.bg-success {
+  background: linear-gradient(135deg, #188978 0%, #2A9D8F 100%) !important;
+}
+
+.valuebox.bg-danger {
+  background: linear-gradient(135deg, #C83F52 0%, #E76B79 100%) !important;
+}
+
+.valuebox.bg-warning {
+  background: linear-gradient(135deg, #E9893A 0%, #F4A261 100%) !important;
+  color: #fff !important;
+}
+
+.valuebox .value-box-title {
+  font-weight: 700;
+}
+
+.card {
+  border-radius: 0.85rem;
+  border: 1px solid rgba(23, 59, 87, 0.09);
+  box-shadow: 0 3px 14px rgba(23, 59, 87, 0.055);
+  background: #fff;
+}
+
+.card-header {
+  font-weight: 700;
+  color: var(--tb-navy);
+  background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+  border-bottom-color: rgba(23, 59, 87, 0.08);
+}
+
+.dashboard-page-title {
+  font-weight: 700;
+  color: var(--tb-navy);
+}
+
+.nav-tabs {
+  border-bottom-color: rgba(23, 59, 87, 0.10);
+}
+
+.nav-tabs .nav-link {
+  font-weight: 600;
+  color: #60717E;
+  border-radius: 0.55rem 0.55rem 0 0;
+}
+
+.nav-tabs .nav-link.active {
+  color: var(--tb-blue);
+  background: #fff;
+  border-color: rgba(23, 59, 87, 0.10) rgba(23, 59, 87, 0.10) #fff;
+}
+
+.card-body p:last-child {
+  margin-bottom: 0;
+}
+
+.small-note {
+  font-size: 0.86rem;
+  color: #6c757d;
+}

@@ -1,0 +1,1547 @@
+---
+title: "Dashboard Surveilans TB"
+subtitle: "Tren 2021–2025 | Hasil Pengobatan, Puskesmas, Peta Kecamatan, dan Profil"
+format:
+  dashboard:
+    theme:
+      - cosmo
+      - styles.scss
+    orientation: rows
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(readxl)
+library(scales)
+library(sf)
+
+# ============================================================
+# 1. KONFIGURASI DATA
+# ============================================================
+# Simpan file Excel tahunan di folder "data".
+# Nama file disarankan memuat tahun, misalnya:
+# tb_2021.xlsx, ..., tb_2025.xlsx
+#
+# File peta sudah disediakan sebagai:
+# data/Kota Padang.geojson
+
+DATA_DIR <- "data"
+
+files <- list.files(
+  path = DATA_DIR,
+  pattern = "\\.xlsx$",
+  full.names = TRUE
+)
+
+if (length(files) == 0) {
+  stop("Tidak ada file .xlsx di folder 'data'.")
+}
+
+df <- files |>
+  map_dfr(
+    \(file) {
+      read_excel(file) |>
+        mutate(
+          tahun_file = as.integer(
+            str_extract(basename(file), "20\\d{2}")
+          )
+        )
+    }
+  ) |>
+  # Variabel identitas tidak diperlukan untuk dashboard dan sengaja
+  # dikeluarkan sebelum analisis/visualisasi.
+  select(-any_of(c("nama_pasien", "alamat_lengkap")))
+
+required_vars <- c(
+  "jenis_faskes",
+  "nama_fasyankes",
+  "hasil_akhir_pengobatan",
+  "kabupaten_pasien",
+  "kecamatan_pasien",
+  "umur",
+  "jenis_kelamin",
+  "tipe_diagnosis",
+  "klasifikasi_lokasi_anatomi",
+  "bulan"
+)
+
+missing_vars <- setdiff(required_vars, names(df))
+
+if (length(missing_vars) > 0) {
+  stop(
+    paste0(
+      "Variabel berikut belum tersedia: ",
+      paste(missing_vars, collapse = ", ")
+    )
+  )
+}
+
+if ("tahun" %in% names(df)) {
+  df <- df |>
+    mutate(
+      tahun = suppressWarnings(as.integer(as.character(tahun))),
+      tahun = coalesce(tahun, tahun_file)
+    )
+} else {
+  df <- df |>
+    mutate(tahun = tahun_file)
+}
+
+# ============================================================
+# 2. STANDARDISASI RINGAN
+# ============================================================
+
+text_vars <- c(
+  "bulan",
+  "status_pengobatan",
+  "jenis_kelamin",
+  "pekerjaan",
+  "status_hamil",
+  "jenis_faskes",
+  "nama_fasyankes",
+  "propinsi_pasien",
+  "kabupaten_pasien",
+  "kecamatan_pasien",
+  "kelurahan_pasien",
+  "tipe_diagnosis",
+  "klasifikasi_lokasi_anatomi",
+  "paduan_oat",
+  "paduan_pengobatan",
+  "hasil_akhir_pengobatan"
+)
+
+df <- df |>
+  mutate(
+    across(
+      any_of(text_vars),
+      ~ na_if(str_squish(as.character(.x)), "")
+    ),
+    umur = suppressWarnings(as.numeric(umur)),
+    jenis_faskes = str_squish(jenis_faskes),
+    nama_fasyankes = str_squish(nama_fasyankes),
+    nama_fasyankes = if_else(
+      !is.na(nama_fasyankes) & nama_fasyankes == str_to_upper(nama_fasyankes),
+      str_to_title(str_to_lower(nama_fasyankes)),
+      nama_fasyankes
+    ),
+    nama_fasyankes = str_replace_all(
+      nama_fasyankes,
+      regex("kota padang", ignore_case = TRUE),
+      "Kota Padang"
+    )
+  )
+
+# Bulan Indonesia -> nomor bulan untuk tren bulanan.
+month_lookup <- c(
+  januari = 1,
+  februari = 2,
+  maret = 3,
+  april = 4,
+  mei = 5,
+  juni = 6,
+  juli = 7,
+  agustus = 8,
+  september = 9,
+  oktober = 10,
+  november = 11,
+  desember = 12
+)
+
+df <- df |>
+  mutate(
+    bulan_chr = str_to_lower(str_squish(as.character(bulan))),
+    bulan_num_numeric = suppressWarnings(as.integer(bulan_chr)),
+    bulan_num_lookup = unname(month_lookup[bulan_chr]),
+    bulan_num = coalesce(bulan_num_numeric, bulan_num_lookup),
+    tanggal_bulan = suppressWarnings(
+      as.Date(sprintf("%d-%02d-01", tahun, bulan_num))
+    )
+  )
+
+# ============================================================
+# 3. DEFINISI INDIKATOR DESKRIPTIF
+# ============================================================
+
+success_outcomes <- c("Sembuh", "Pengobatan Lengkap")
+ltfu_outcomes <- c(
+  "Putus berobat (lost to follow up)",
+  "Putus berobat (lost to follow-up)",
+  "Putus berobat"
+)
+
+# Palet warna dashboard: kontras, konsisten, dan ramah untuk layar.
+COL_NAVY <- "#173B57"
+COL_BLUE <- "#2F80ED"
+COL_TEAL <- "#2A9D8F"
+COL_ORANGE <- "#F4A261"
+COL_RED <- "#D1495B"
+COL_PURPLE <- "#7B2CBF"
+COL_GREY <- "#7A8894"
+
+outcome_palette <- c(
+  "Sembuh" = COL_TEAL,
+  "Pengobatan Lengkap" = COL_BLUE,
+  "Putus berobat / LTFU" = COL_ORANGE,
+  "Meninggal" = COL_RED,
+  "Gagal" = COL_PURPLE,
+  "Tidak dievaluasi / pindah" = COL_GREY
+)
+
+diagnosis_palette <- c(
+  "Terdiagnosis klinis" = "#E76F51",
+  "Terkonfirmasi bakteriologis" = COL_BLUE
+)
+
+anatomy_palette <- c(
+  "TBC Paru" = COL_TEAL,
+  "TBC Ekstraparu" = COL_ORANGE
+)
+
+add_outcome_vars <- function(data) {
+  data |>
+    mutate(
+      outcome_recorded = !is.na(hasil_akhir_pengobatan),
+      success = hasil_akhir_pengobatan %in% success_outcomes,
+      death = hasil_akhir_pengobatan == "Meninggal",
+      ltfu = hasil_akhir_pengobatan %in% ltfu_outcomes,
+      outcome_std = case_when(
+        hasil_akhir_pengobatan %in% success_outcomes ~ hasil_akhir_pengobatan,
+        death ~ "Meninggal",
+        ltfu ~ "Putus berobat / LTFU",
+        hasil_akhir_pengobatan == "Gagal" ~ "Gagal",
+        str_detect(
+          str_to_lower(coalesce(hasil_akhir_pengobatan, "")),
+          "tidak dievaluasi|pindah"
+        ) ~ "Tidak dievaluasi / pindah",
+        outcome_recorded ~ hasil_akhir_pengobatan,
+        TRUE ~ NA_character_
+      )
+    )
+}
+
+tb_all <- add_outcome_vars(df)
+
+tb_pusk <- tb_all |>
+  filter(str_to_lower(jenis_faskes) == "puskesmas")
+
+if (nrow(tb_pusk) == 0) {
+  stop("Tidak ditemukan observasi dengan jenis_faskes = 'Puskesmas'.")
+}
+
+years <- sort(unique(na.omit(tb_all$tahun)))
+latest_year <- max(years)
+previous_year <- if (length(years) >= 2) {
+  years[length(years) - 1]
+} else {
+  NA_integer_
+}
+
+summarise_year <- function(data, yr) {
+  x <- data |> filter(tahun == yr)
+  x_recorded <- x |> filter(outcome_recorded)
+
+  tibble(
+    tahun = yr,
+    total = nrow(x),
+    outcome_recorded = nrow(x_recorded),
+    success_n = sum(x_recorded$success, na.rm = TRUE),
+    success_pct = if_else(
+      nrow(x_recorded) > 0,
+      100 * sum(x_recorded$success, na.rm = TRUE) / nrow(x_recorded),
+      NA_real_
+    ),
+    death_n = sum(x$death, na.rm = TRUE),
+    ltfu_n = sum(x$ltfu, na.rm = TRUE)
+  )
+}
+
+kpi_latest <- summarise_year(tb_all, latest_year)
+kpi_prev <- if (!is.na(previous_year)) {
+  summarise_year(tb_all, previous_year)
+} else {
+  NULL
+}
+
+fmt_change_n <- function(current, previous) {
+  if (is.null(previous) || is.na(previous)) {
+    return("Tidak ada pembanding")
+  }
+  delta <- current - previous
+  paste0(
+    ifelse(delta > 0, "+", ""),
+    comma(delta),
+    " vs ",
+    previous_year
+  )
+}
+
+fmt_success_compare <- function(current, previous) {
+  if (is.null(previous) || is.na(previous)) {
+    return("Tidak ada pembanding")
+  }
+  paste0(
+    previous_year,
+    ": ",
+    number(previous, accuracy = 0.1, decimal.mark = ","),
+    "%",
+    "  →  ",
+    latest_year,
+    ": ",
+    number(current, accuracy = 0.1, decimal.mark = ","),
+    "%"
+  )
+}
+
+# ============================================================
+# 4. DATA VISUALISASI UMUM
+# ============================================================
+
+cases_year <- tb_all |>
+  count(tahun, name = "n")
+
+cases_month <- tb_all |>
+  filter(!is.na(tanggal_bulan)) |>
+  count(tanggal_bulan, name = "n") |>
+  arrange(tanggal_bulan)
+
+outcome_latest <- tb_all |>
+  filter(
+    tahun == latest_year,
+    outcome_recorded
+  ) |>
+  count(outcome_std, name = "n") |>
+  mutate(outcome_std = fct_reorder(outcome_std, n))
+
+focus_outcomes <- c(
+  "Sembuh",
+  "Pengobatan Lengkap",
+  "Putus berobat / LTFU",
+  "Meninggal",
+  "Gagal"
+)
+
+outcome_trend <- tb_all |>
+  filter(outcome_std %in% focus_outcomes) |>
+  count(tahun, outcome_std, name = "n") |>
+  complete(
+    tahun = years,
+    outcome_std = focus_outcomes,
+    fill = list(n = 0)
+  ) |>
+  mutate(
+    outcome_std = factor(outcome_std, levels = focus_outcomes)
+  )
+
+outcome_composition <- tb_all |>
+  filter(outcome_recorded) |>
+  count(tahun, outcome_std, name = "n") |>
+  group_by(tahun) |>
+  mutate(pct = 100 * n / sum(n)) |>
+  ungroup()
+
+success_year <- tb_all |>
+  filter(outcome_recorded) |>
+  group_by(tahun) |>
+  summarise(
+    total_outcome = n(),
+    success_n = sum(success, na.rm = TRUE),
+    success_pct = 100 * success_n / total_outcome,
+    .groups = "drop"
+  )
+
+# ============================================================
+# 5. DATA PUSKESMAS
+# ============================================================
+
+pusk_outcome <- tb_pusk |>
+  filter(
+    outcome_std %in%
+      c(
+        "Sembuh",
+        "Pengobatan Lengkap",
+        "Gagal"
+      )
+  ) |>
+  count(
+    tahun,
+    nama_fasyankes,
+    outcome_std,
+    name = "n"
+  ) |>
+  mutate(
+    pusk_label = nama_fasyankes |>
+      str_remove(regex("^Puskesmas\\s+", ignore_case = TRUE)) |>
+      str_squish()
+  )
+
+pusk_success <- tb_pusk |>
+  filter(outcome_recorded) |>
+  group_by(tahun, nama_fasyankes) |>
+  summarise(
+    total_outcome = n(),
+    success_n = sum(success, na.rm = TRUE),
+    success_pct = 100 * success_n / total_outcome,
+    .groups = "drop"
+  ) |>
+  complete(
+    tahun = years,
+    nama_fasyankes = sort(unique(tb_pusk$nama_fasyankes))
+  )
+
+pusk_latest <- tb_pusk |>
+  filter(tahun == latest_year) |>
+  count(nama_fasyankes, name = "n") |>
+  arrange(n)
+
+# ============================================================
+# 6. DATA PETA KECAMATAN KOTA PADANG
+# ============================================================
+
+clean_kecamatan <- function(x) {
+  x |>
+    str_to_lower() |>
+    str_squish() |>
+    str_remove(regex("^kec(amatan)?\\.?\\s+", ignore_case = TRUE)) |>
+    str_replace_all("[^a-z0-9 ]", "") |>
+    str_squish()
+}
+
+PETA_FILE <- case_when(
+  file.exists(file.path(DATA_DIR, "Kota Padang.geojson")) ~ file.path(
+    DATA_DIR,
+    "Kota Padang.geojson"
+  ),
+  file.exists("Kota Padang.geojson") ~ "Kota Padang.geojson",
+  TRUE ~ NA_character_
+)
+
+if (is.na(PETA_FILE)) {
+  stop(
+    "File peta 'Kota Padang.geojson' tidak ditemukan di folder data atau root project."
+  )
+}
+
+peta_padang <- st_read(PETA_FILE, quiet = TRUE) |>
+  filter(str_to_lower(str_squish(WADMKK)) == "kota padang") |>
+  transmute(
+    kode_kecamatan = KDCPUM,
+    kecamatan = str_to_title(str_to_lower(WADMKC)),
+    kecamatan_key = clean_kecamatan(WADMKC),
+    geometry = geometry
+  )
+
+if (nrow(peta_padang) != 11) {
+  warning(
+    paste0(
+      "Jumlah kecamatan pada GeoJSON setelah filter Kota Padang = ",
+      nrow(peta_padang),
+      ". Periksa kembali sumber peta."
+    )
+  )
+}
+
+tb_padang <- tb_all |>
+  mutate(
+    kabupaten_key = str_to_lower(str_squish(kabupaten_pasien)),
+    kecamatan_key = clean_kecamatan(kecamatan_pasien)
+  ) |>
+  filter(
+    kabupaten_key %in% c("kota padang", "padang"),
+    !is.na(kecamatan_key),
+    kecamatan_key != ""
+  )
+
+map_count_latest <- tb_padang |>
+  filter(tahun == latest_year) |>
+  count(kecamatan_key, name = "jumlah_pasien")
+
+map_success_latest <- tb_padang |>
+  filter(tahun == latest_year, outcome_recorded) |>
+  group_by(kecamatan_key) |>
+  summarise(
+    total_outcome = n(),
+    success_n = sum(success, na.rm = TRUE),
+    success_pct = 100 * success_n / total_outcome,
+    .groups = "drop"
+  )
+
+map_ltfu_latest <- tb_padang |>
+  filter(tahun == latest_year, outcome_recorded) |>
+  group_by(kecamatan_key) |>
+  summarise(
+    total_outcome_ltfu = n(),
+    ltfu_n = sum(ltfu, na.rm = TRUE),
+    ltfu_pct = 100 * ltfu_n / total_outcome_ltfu,
+    .groups = "drop"
+  )
+
+map_death_latest <- tb_padang |>
+  filter(tahun == latest_year, outcome_recorded) |>
+  group_by(kecamatan_key) |>
+  summarise(
+    total_outcome_death = n(),
+    death_n = sum(death, na.rm = TRUE),
+    death_pct = 100 * death_n / total_outcome_death,
+    .groups = "drop"
+  )
+
+map_tb <- peta_padang |>
+  left_join(map_count_latest, by = "kecamatan_key") |>
+  left_join(map_success_latest, by = "kecamatan_key") |>
+  left_join(map_ltfu_latest, by = "kecamatan_key") |>
+  left_join(map_death_latest, by = "kecamatan_key")
+
+unmatched_kecamatan <- tb_padang |>
+  distinct(kecamatan_pasien, kecamatan_key) |>
+  anti_join(
+    peta_padang |>
+      st_drop_geometry() |>
+      distinct(kecamatan_key),
+    by = "kecamatan_key"
+  )
+
+kec_latest <- map_tb |>
+  st_drop_geometry() |>
+  select(
+    kecamatan,
+    jumlah_pasien,
+    success_pct,
+    ltfu_n,
+    ltfu_pct,
+    death_n,
+    death_pct
+  )
+
+# Titik jangkar label dibuat pada proyeksi metrik agar tetap berada
+# di dalam poligon kecamatan, kemudian dikembalikan ke CRS peta.
+map_label_sf <- map_tb |>
+  st_transform(32747) |>
+  st_point_on_surface() |>
+  st_transform(st_crs(map_tb))
+
+map_label_xy <- st_coordinates(map_label_sf)
+
+# Posisi label dibuat manual agar stabil pada setiap render.
+# Nilai dx/dy menggunakan derajat karena GeoJSON memakai EPSG:4326.
+# Kecamatan yang padat di pusat kota digeser lebih jauh agar label
+# tidak saling bertumpuk; setiap label dihubungkan ke titik jangkar
+# dengan garis (leader line).
+map_label_offsets <- tribble(
+  ~kecamatan            , ~dx    , ~dy    ,
+  # Kecamatan luas: label dibuat dekat dengan poligon agar leader line pendek.
+  "Koto Tangah"         , -0.020 ,  0.008 ,
+  "Kuranji"             ,  0.018 ,  0.004 ,
+  "Pauh"                ,  0.020 ,  0.006 ,
+  "Lubuk Kilangan"      ,  0.022 , -0.002 ,
+  "Bungus Teluk Kabung" ,  0.024 , -0.012 ,
+  # Area pusat kota: offset tetap dibuat lebih besar untuk mencegah label bertumpuk.
+  "Nanggalo"            , -0.050 ,  0.014 ,
+  "Padang Utara"        , -0.054 ,  0.006 ,
+  "Padang Barat"        , -0.055 , -0.003 ,
+  "Padang Timur"        ,  0.045 ,  0.005 ,
+  "Padang Selatan"      , -0.052 , -0.012 ,
+  "Lubuk Begalung"      ,  0.036 , -0.014
+)
+
+map_label_df <- map_label_sf |>
+  st_drop_geometry() |>
+  mutate(
+    anchor_x = map_label_xy[, 1],
+    anchor_y = map_label_xy[, 2]
+  ) |>
+  left_join(map_label_offsets, by = "kecamatan") |>
+  mutate(
+    dx = coalesce(dx, 0),
+    dy = coalesce(dy, 0),
+    label_x = anchor_x + dx,
+    label_y = anchor_y + dy
+  )
+
+# ============================================================
+# 7. DATA PROFIL PASIEN & KARAKTERISTIK TB
+# ============================================================
+
+age_latest <- tb_all |>
+  filter(tahun == latest_year, !is.na(umur), umur >= 0) |>
+  mutate(
+    kelompok_umur = cut(
+      umur,
+      breaks = c(-Inf, 14, 24, 34, 44, 54, 64, Inf),
+      labels = c("0–14", "15–24", "25–34", "35–44", "45–54", "55–64", "≥65"),
+      right = TRUE
+    )
+  ) |>
+  count(kelompok_umur, name = "n", .drop = FALSE)
+
+sex_latest <- tb_all |>
+  filter(tahun == latest_year, !is.na(jenis_kelamin)) |>
+  mutate(
+    jenis_kelamin_std = case_when(
+      str_to_upper(str_squish(jenis_kelamin)) %in%
+        c("L", "LAKI-LAKI", "LAKI LAKI") ~ "Laki-laki",
+      str_to_upper(str_squish(jenis_kelamin)) %in%
+        c("P", "PEREMPUAN") ~ "Perempuan",
+      TRUE ~ jenis_kelamin
+    )
+  ) |>
+  count(jenis_kelamin_std, name = "n") |>
+  mutate(
+    pct = 100 * n / sum(n),
+    label = paste0(
+      comma(n),
+      " (",
+      number(pct, accuracy = 0.1, decimal.mark = ","),
+      "%)"
+    )
+  ) |>
+  arrange(n)
+
+diagnosis_year <- tb_all |>
+  filter(!is.na(tipe_diagnosis)) |>
+  count(tahun, tipe_diagnosis, name = "n")
+
+anatomy_year <- tb_all |>
+  filter(!is.na(klasifikasi_lokasi_anatomi)) |>
+  count(tahun, klasifikasi_lokasi_anatomi, name = "n")
+
+# ============================================================
+# 8. THEME
+# ============================================================
+
+theme_tb <- theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(color = "#E7EDF2", linewidth = 0.45),
+    plot.margin = margin(8, 12, 8, 8),
+    axis.title = element_text(face = "bold", color = COL_NAVY),
+    axis.text = element_text(color = "#52606D"),
+    legend.title = element_text(face = "bold", color = COL_NAVY),
+    strip.text = element_text(face = "bold", color = COL_NAVY),
+    plot.caption = element_text(color = "#667784", size = 9)
+  )
+
+# ============================================================
+# 9. PLOTS RINGKASAN & TREN
+# ============================================================
+
+p_cases_year <- cases_year |>
+  ggplot(aes(x = tahun, y = n)) +
+  geom_line(linewidth = 1.0, color = COL_NAVY) +
+  geom_point(size = 2.8, color = COL_BLUE) +
+  scale_x_continuous(breaks = years) +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0.02, 0.08))
+  ) +
+  labs(x = NULL, y = "Jumlah pasien") +
+  theme_tb
+
+p_cases_month <- cases_month |>
+  ggplot(aes(x = tanggal_bulan, y = n)) +
+  geom_line(linewidth = 0.8, color = COL_NAVY) +
+  geom_point(size = 1.5, color = COL_BLUE) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b\n%Y") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    x = NULL,
+    y = "Jumlah pasien",
+    caption = "Bulan mengikuti nilai pada variabel bulan di data sumber."
+  ) +
+  theme_tb +
+  theme(axis.text.x = element_text(size = 9))
+
+p_outcome_latest <- outcome_latest |>
+  ggplot(aes(x = n, y = outcome_std, fill = outcome_std)) +
+  geom_col(width = 0.68, show.legend = FALSE) +
+  geom_text(
+    aes(label = comma(n)),
+    hjust = -0.15,
+    size = 3.3,
+    color = COL_NAVY
+  ) +
+  scale_fill_manual(values = outcome_palette, na.value = COL_GREY) +
+  scale_x_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.14))
+  ) +
+  labs(x = "Jumlah pasien", y = NULL) +
+  theme_tb
+
+outcome_endpoint <- outcome_trend |>
+  group_by(outcome_std) |>
+  filter(tahun == max(tahun, na.rm = TRUE)) |>
+  ungroup()
+
+p_outcome_trend <- outcome_trend |>
+  ggplot(
+    aes(
+      x = tahun,
+      y = n,
+      color = outcome_std,
+      group = outcome_std
+    )
+  ) +
+  geom_line(linewidth = 0.95) +
+  geom_point(size = 2.35) +
+  scale_color_manual(values = outcome_palette) +
+  scale_x_continuous(
+    breaks = years,
+    limits = c(min(years), max(years) + 1.15)
+  ) +
+  scale_y_continuous(labels = comma) +
+  labs(x = "Tahun", y = "Jumlah pasien") +
+  theme_tb +
+  theme(
+    legend.position = "none",
+    plot.margin = margin(8, 115, 8, 8)
+  ) +
+  coord_cartesian(clip = "off")
+
+if (requireNamespace("ggrepel", quietly = TRUE)) {
+  p_outcome_trend <- p_outcome_trend +
+    ggrepel::geom_text_repel(
+      data = outcome_endpoint,
+      aes(label = outcome_std),
+      hjust = 0,
+      direction = "y",
+      nudge_x = 0.18,
+      size = 3.35,
+      fontface = "bold",
+      box.padding = 0.25,
+      point.padding = 0.15,
+      min.segment.length = 0,
+      segment.size = 0.35,
+      segment.alpha = 0.65,
+      max.overlaps = Inf,
+      seed = 2026,
+      show.legend = FALSE
+    )
+} else {
+  p_outcome_trend <- p_outcome_trend +
+    geom_text(
+      data = outcome_endpoint,
+      aes(label = outcome_std),
+      hjust = 0,
+      nudge_x = 0.12,
+      size = 3.1,
+      show.legend = FALSE
+    )
+}
+
+p_outcome_composition <- outcome_composition |>
+  ggplot(
+    aes(
+      x = factor(tahun),
+      y = pct,
+      fill = outcome_std
+    )
+  ) +
+  geom_col(width = 0.72) +
+  scale_fill_manual(values = outcome_palette, na.value = COL_GREY) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    labels = \(x) paste0(x, "%"),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(
+    x = "Tahun",
+    y = "Proporsi outcome",
+    fill = "Hasil akhir"
+  ) +
+  theme_tb +
+  theme(legend.position = "bottom") +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+success_change <- if (nrow(success_year) >= 2) {
+  tail(success_year$success_pct, 1) -
+    success_year$success_pct[nrow(success_year) - 1]
+} else {
+  NA_real_
+}
+
+success_caption <- if (!is.na(success_change)) {
+  paste0(
+    "Perubahan ",
+    previous_year,
+    "–",
+    latest_year,
+    ": ",
+    ifelse(success_change > 0, "+", ""),
+    number(success_change, accuracy = 0.1, decimal.mark = ","),
+    " poin persentase. Denominator: pasien dengan hasil akhir pengobatan tercatat."
+  )
+} else {
+  "Denominator: pasien dengan hasil akhir pengobatan tercatat."
+}
+
+p_success_trend <- success_year |>
+  ggplot(aes(x = tahun, y = success_pct)) +
+  geom_line(linewidth = 1.0, color = COL_TEAL) +
+  geom_point(size = 3.0, color = COL_NAVY) +
+  geom_text(
+    aes(
+      label = paste0(
+        number(success_pct, accuracy = 0.1, decimal.mark = ","),
+        "%"
+      )
+    ),
+    vjust = -0.9,
+    size = 3.35,
+    color = COL_NAVY
+  ) +
+  scale_x_continuous(breaks = years) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, 20),
+    labels = \(x) paste0(x, "%"),
+    expand = expansion(mult = c(0, 0.06))
+  ) +
+  labs(
+    x = "Tahun",
+    y = "Keberhasilan pengobatan (%)",
+    caption = success_caption
+  ) +
+  theme_tb
+
+# ============================================================
+# 10. DETAIL PUSKESMAS DENGAN DIRECT LABEL
+# ============================================================
+
+make_pusk_panel <- function(outcome_name, label_size = 2.4) {
+  dat <- pusk_outcome |>
+    filter(outcome_std == outcome_name)
+
+  endpoint <- dat |>
+    group_by(nama_fasyankes) |>
+    filter(tahun == max(tahun, na.rm = TRUE)) |>
+    slice_tail(n = 1) |>
+    ungroup()
+
+  p <- dat |>
+    ggplot(
+      aes(
+        x = tahun,
+        y = n,
+        color = nama_fasyankes,
+        group = nama_fasyankes
+      )
+    ) +
+    geom_line(linewidth = 0.62, alpha = 0.82) +
+    geom_point(size = 1.55) +
+    scale_color_viridis_d(option = "H", end = 0.90) +
+    scale_x_continuous(
+      breaks = years,
+      limits = c(min(years), max(years) + 1.55)
+    ) +
+    labs(
+      title = outcome_name,
+      x = "Tahun",
+      y = NULL
+    ) +
+    theme_tb +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 11),
+      plot.margin = margin(8, 75, 8, 8)
+    ) +
+    coord_cartesian(clip = "off")
+
+  if (requireNamespace("ggrepel", quietly = TRUE)) {
+    p <- p +
+      ggrepel::geom_text_repel(
+        data = endpoint,
+        aes(label = pusk_label),
+        hjust = 0,
+        direction = "y",
+        nudge_x = 0.16,
+        size = label_size,
+        box.padding = 0.18,
+        point.padding = 0.10,
+        min.segment.length = 0,
+        segment.alpha = 0.55,
+        segment.size = 0.28,
+        max.overlaps = Inf,
+        seed = 2026,
+        show.legend = FALSE
+      )
+  } else {
+    p <- p +
+      geom_text(
+        data = endpoint,
+        aes(label = pusk_label),
+        hjust = 0,
+        nudge_x = 0.12,
+        size = label_size,
+        check_overlap = TRUE,
+        show.legend = FALSE
+      )
+  }
+
+  p
+}
+
+p_gagal <- make_pusk_panel("Gagal", label_size = 2.35)
+p_lengkap <- make_pusk_panel("Pengobatan Lengkap", label_size = 2.25)
+p_sembuh <- make_pusk_panel("Sembuh", label_size = 2.25)
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  p_pusk_outcome <- p_gagal +
+    p_lengkap +
+    p_sembuh +
+    patchwork::plot_layout(widths = c(0.62, 1.18, 1.28)) +
+    patchwork::plot_annotation(
+      theme = theme(plot.margin = margin(0, 0, 0, 0))
+    )
+} else {
+  p_pusk_outcome <- pusk_outcome |>
+    ggplot(
+      aes(
+        x = tahun,
+        y = n,
+        color = nama_fasyankes,
+        group = nama_fasyankes
+      )
+    ) +
+    geom_line(linewidth = 0.62, alpha = 0.82) +
+    geom_point(size = 1.55) +
+    scale_color_viridis_d(option = "H", end = 0.90) +
+    facet_wrap(~outcome_std, scales = "free_y", nrow = 1) +
+    scale_x_continuous(breaks = years) +
+    labs(x = "Tahun", y = "Jumlah pasien") +
+    theme_tb +
+    theme(legend.position = "none")
+}
+
+p_heat_success <- pusk_success |>
+  mutate(
+    nama_fasyankes = fct_reorder(
+      nama_fasyankes,
+      success_pct,
+      .fun = mean,
+      na.rm = TRUE
+    )
+  ) |>
+  ggplot(
+    aes(
+      x = factor(tahun),
+      y = nama_fasyankes,
+      fill = success_pct
+    )
+  ) +
+  geom_tile(color = "white", linewidth = 0.45) +
+  geom_text(
+    aes(
+      label = if_else(
+        is.na(success_pct),
+        "",
+        paste0(number(success_pct, accuracy = 1), "%")
+      )
+    ),
+    size = 2.5
+  ) +
+  scale_fill_gradientn(
+    colours = c("#D1495B", "#F4A261", "#F6D365", "#73C088", "#2A9D8F"),
+    values = scales::rescale(c(0, 80, 90, 95, 100)),
+    limits = c(0, 100),
+    labels = \(x) paste0(number(x, accuracy = 1), "%"),
+    na.value = "#EEF2F4"
+  ) +
+  labs(
+    x = "Tahun",
+    y = NULL,
+    fill = "Keberhasilan",
+    caption = "Sel abu-abu = tidak ada estimasi pada kombinasi Puskesmas-tahun tersebut."
+  ) +
+  theme_tb +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 7.8)
+  )
+
+p_pusk_latest <- pusk_latest |>
+  ggplot(aes(x = n, y = fct_reorder(nama_fasyankes, n))) +
+  geom_col(width = 0.72, fill = COL_BLUE) +
+  geom_text(
+    aes(label = comma(n)),
+    hjust = -0.15,
+    size = 2.8
+  ) +
+  scale_x_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(x = "Jumlah pasien", y = NULL) +
+  theme_tb +
+  theme(axis.text.y = element_text(size = 8))
+
+# ============================================================
+# 11. PLOTS PETA
+# ============================================================
+
+map_theme <- theme_void(base_size = 12) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(face = "bold", color = COL_NAVY),
+    legend.text = element_text(color = "#52606D"),
+    plot.caption = element_text(size = 9, color = "#667784", hjust = 0)
+  )
+
+add_map_labels <- function(p, label_df = map_label_df) {
+  p +
+    geom_segment(
+      data = label_df,
+      aes(
+        x = anchor_x,
+        y = anchor_y,
+        xend = label_x,
+        yend = label_y
+      ),
+      inherit.aes = FALSE,
+      color = "#8A99A5",
+      linewidth = 0.36,
+      lineend = "round"
+    ) +
+    geom_label(
+      data = label_df,
+      aes(x = label_x, y = label_y, label = kecamatan),
+      inherit.aes = FALSE,
+      size = 2.78,
+      color = COL_NAVY,
+      fontface = "bold",
+      fill = scales::alpha("white", 0.90),
+      linewidth = 0.20,
+      label.padding = grid::unit(0.12, "lines"),
+      label.r = grid::unit(0.07, "lines")
+    ) +
+    coord_sf(clip = "off") +
+    theme(
+      plot.margin = margin(8, 26, 8, 26)
+    )
+}
+
+p_map_count <- ggplot(map_tb) +
+  geom_sf(aes(fill = jumlah_pasien), color = "white", linewidth = 0.65) +
+  scale_fill_gradientn(
+    colours = c("#EAF3FA", "#A8D5E5", "#4EA3C8", "#2F80ED", "#173B57"),
+    na.value = "#EEF2F4",
+    labels = comma
+  ) +
+  labs(
+    fill = "Jumlah pasien",
+    caption = paste0(
+      "Jumlah pasien tercatat menurut kecamatan, ",
+      latest_year,
+      ". Abu-abu = tidak ada estimasi hasil join."
+    )
+  ) +
+  map_theme
+p_map_count <- add_map_labels(p_map_count)
+
+p_map_success <- ggplot(map_tb) +
+  geom_sf(aes(fill = success_pct), color = "white", linewidth = 0.65) +
+  scale_fill_gradientn(
+    colours = c("#D1495B", "#F4A261", "#F6D365", "#73C088", "#2A9D8F"),
+    values = scales::rescale(c(0, 80, 90, 95, 100)),
+    limits = c(0, 100),
+    labels = \(x) paste0(number(x, accuracy = 1), "%"),
+    na.value = "#EEF2F4"
+  ) +
+  labs(
+    fill = "Keberhasilan",
+    caption = "Denominator: pasien dengan hasil akhir pengobatan tercatat pada kecamatan tersebut."
+  ) +
+  map_theme
+p_map_success <- add_map_labels(p_map_success)
+
+p_map_ltfu <- ggplot(map_tb) +
+  geom_sf(aes(fill = ltfu_pct), color = "white", linewidth = 0.65) +
+  scale_fill_gradientn(
+    colours = c("#FFF4E6", "#F9C784", "#F4A261", "#D97732", "#A94A12"),
+    labels = \(x) paste0(number(x, accuracy = 0.1), "%"),
+    na.value = "#EEF2F4"
+  ) +
+  labs(
+    fill = "LTFU (%)",
+    caption = paste0(
+      "Proporsi putus berobat / LTFU menurut kecamatan, ",
+      latest_year,
+      ". Denominator: pasien dengan outcome tercatat."
+    )
+  ) +
+  map_theme
+p_map_ltfu <- add_map_labels(p_map_ltfu)
+
+p_map_death <- ggplot(map_tb) +
+  geom_sf(aes(fill = death_pct), color = "white", linewidth = 0.65) +
+  scale_fill_gradientn(
+    colours = c("#FCE9EC", "#F3A6B1", "#D1495B", "#A52A3A", "#661B2A"),
+    labels = \(x) paste0(number(x, accuracy = 0.1), "%"),
+    na.value = "#EEF2F4"
+  ) +
+  labs(
+    fill = "Meninggal (%)",
+    caption = paste0(
+      "Proporsi pasien meninggal menurut kecamatan, ",
+      latest_year,
+      ". Denominator: pasien dengan outcome tercatat."
+    )
+  ) +
+  map_theme
+p_map_death <- add_map_labels(p_map_death)
+
+make_kec_bar <- function(data, value, label, fill, xlab) {
+  value <- rlang::ensym(value)
+  label <- rlang::ensym(label)
+  data |>
+    filter(!is.na(!!value)) |>
+    ggplot(aes(x = !!value, y = fct_reorder(kecamatan, !!value))) +
+    geom_col(width = 0.70, fill = fill) +
+    geom_text(
+      aes(label = !!label),
+      hjust = -0.10,
+      size = 3.0,
+      color = COL_NAVY
+    ) +
+    scale_x_continuous(
+      expand = expansion(mult = c(0, 0.18))
+    ) +
+    labs(x = xlab, y = NULL) +
+    theme_tb +
+    theme(axis.text.y = element_text(size = 8.5))
+}
+
+kec_plot_data <- kec_latest |>
+  mutate(
+    count_label = comma(jumlah_pasien),
+    success_label = paste0(
+      number(success_pct, accuracy = 0.1, decimal.mark = ","),
+      "%"
+    ),
+    ltfu_label = paste0(
+      number(ltfu_pct, accuracy = 0.1, decimal.mark = ","),
+      "%"
+    ),
+    death_label = paste0(
+      number(death_pct, accuracy = 0.1, decimal.mark = ","),
+      "%"
+    )
+  )
+
+p_kec_count <- make_kec_bar(
+  kec_plot_data,
+  jumlah_pasien,
+  count_label,
+  COL_BLUE,
+  "Jumlah pasien"
+) +
+  scale_x_continuous(labels = comma, expand = expansion(mult = c(0, 0.18)))
+
+p_kec_success <- make_kec_bar(
+  kec_plot_data,
+  success_pct,
+  success_label,
+  COL_TEAL,
+  "Keberhasilan (%)"
+) +
+  scale_x_continuous(
+    limits = c(0, 100),
+    labels = \(x) paste0(x, "%"),
+    expand = expansion(mult = c(0, 0.12))
+  )
+
+p_kec_ltfu <- make_kec_bar(
+  kec_plot_data,
+  ltfu_pct,
+  ltfu_label,
+  COL_ORANGE,
+  "LTFU (%)"
+) +
+  scale_x_continuous(
+    labels = \(x) paste0(number(x, accuracy = 0.1), "%"),
+    expand = expansion(mult = c(0, 0.20))
+  )
+
+p_kec_death <- make_kec_bar(
+  kec_plot_data,
+  death_pct,
+  death_label,
+  COL_RED,
+  "Meninggal (%)"
+) +
+  scale_x_continuous(
+    labels = \(x) paste0(number(x, accuracy = 0.1), "%"),
+    expand = expansion(mult = c(0, 0.20))
+  )
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  p_map_count_pair <- p_map_count +
+    p_kec_count +
+    patchwork::plot_layout(widths = c(1.65, 1))
+  p_map_success_pair <- p_map_success +
+    p_kec_success +
+    patchwork::plot_layout(widths = c(1.65, 1))
+  p_map_ltfu_pair <- p_map_ltfu +
+    p_kec_ltfu +
+    patchwork::plot_layout(widths = c(1.65, 1))
+  p_map_death_pair <- p_map_death +
+    p_kec_death +
+    patchwork::plot_layout(widths = c(1.65, 1))
+} else {
+  p_map_count_pair <- p_map_count
+  p_map_success_pair <- p_map_success
+  p_map_ltfu_pair <- p_map_ltfu
+  p_map_death_pair <- p_map_death
+}
+
+# ============================================================
+# 12. PLOTS PROFIL
+# ============================================================
+
+p_age <- age_latest |>
+  ggplot(aes(x = kelompok_umur, y = n)) +
+  geom_col(width = 0.72, fill = COL_TEAL) +
+  geom_text(aes(label = comma(n)), vjust = -0.45, size = 3, color = COL_NAVY) +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  labs(x = "Kelompok umur (tahun)", y = "Jumlah pasien") +
+  theme_tb
+
+sex_palette <- c(
+  "Laki-laki" = COL_BLUE,
+  "Perempuan" = "#C65DBB"
+)
+
+p_sex <- sex_latest |>
+  ggplot(aes(
+    x = n,
+    y = fct_reorder(jenis_kelamin_std, n),
+    fill = jenis_kelamin_std
+  )) +
+  geom_col(width = 0.65, show.legend = FALSE) +
+  geom_text(aes(label = label), hjust = -0.10, size = 3.2, color = COL_NAVY) +
+  scale_fill_manual(values = sex_palette, na.value = COL_GREY) +
+  scale_x_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.23))
+  ) +
+  labs(x = "Jumlah pasien", y = NULL) +
+  theme_tb
+
+make_direct_profile_line <- function(data, group_var, palette, y_title) {
+  group_var <- rlang::ensym(group_var)
+  group_name <- rlang::as_name(group_var)
+  endpoint <- data |>
+    group_by(!!group_var) |>
+    filter(tahun == max(tahun, na.rm = TRUE)) |>
+    slice_tail(n = 1) |>
+    ungroup()
+
+  p <- data |>
+    ggplot(aes(x = tahun, y = n, color = !!group_var, group = !!group_var)) +
+    geom_line(linewidth = 0.95) +
+    geom_point(size = 2.3) +
+    scale_color_manual(values = palette) +
+    scale_x_continuous(
+      breaks = years,
+      limits = c(min(years), max(years) + 1.25)
+    ) +
+    scale_y_continuous(labels = comma) +
+    labs(x = "Tahun", y = y_title) +
+    theme_tb +
+    theme(
+      legend.position = "none",
+      plot.margin = margin(8, 95, 8, 8)
+    ) +
+    coord_cartesian(clip = "off")
+
+  if (requireNamespace("ggrepel", quietly = TRUE)) {
+    p <- p +
+      ggrepel::geom_text_repel(
+        data = endpoint,
+        aes(label = !!group_var),
+        hjust = 0,
+        direction = "y",
+        nudge_x = 0.16,
+        size = 3.0,
+        fontface = "bold",
+        box.padding = 0.22,
+        point.padding = 0.12,
+        min.segment.length = 0,
+        segment.size = 0.32,
+        segment.alpha = 0.65,
+        max.overlaps = Inf,
+        seed = 2026,
+        show.legend = FALSE
+      )
+  } else {
+    p <- p +
+      geom_text(
+        data = endpoint,
+        aes(label = !!group_var),
+        hjust = 0,
+        nudge_x = 0.12,
+        size = 2.9,
+        show.legend = FALSE
+      )
+  }
+  p
+}
+
+p_diagnosis <- make_direct_profile_line(
+  diagnosis_year,
+  tipe_diagnosis,
+  diagnosis_palette,
+  "Jumlah pasien"
+)
+
+p_anatomy <- make_direct_profile_line(
+  anatomy_year,
+  klasifikasi_lokasi_anatomi,
+  anatomy_palette,
+  "Jumlah pasien"
+)
+```
+
+# Ringkasan
+
+## Row
+
+::: {.valuebox icon="people-fill" color="primary"}
+Total Pasien TB
+
+`r comma(kpi_latest$total)`
+
+`r paste0("Seluruh fasyankes · ", latest_year, " · ", fmt_change_n(kpi_latest$total, if (is.null(kpi_prev)) NA else kpi_prev$total))`
+:::
+
+::: {.valuebox icon="check-circle" color="success"}
+Keberhasilan Pengobatan*
+
+`r paste0(number(kpi_latest$success_pct, accuracy = 0.1, decimal.mark = ","), "%")`
+
+`r fmt_success_compare(kpi_latest$success_pct, if (is.null(kpi_prev)) NA else kpi_prev$success_pct)`
+:::
+
+::: {.valuebox icon="heart-pulse" color="danger"}
+Meninggal
+
+`r comma(kpi_latest$death_n)`
+
+`r paste0(latest_year, " · ", fmt_change_n(kpi_latest$death_n, if (is.null(kpi_prev)) NA else kpi_prev$death_n))`
+:::
+
+::: {.valuebox icon="person-dash" color="warning"}
+Putus Berobat / LTFU
+
+`r comma(kpi_latest$ltfu_n)`
+
+`r paste0(latest_year, " · ", fmt_change_n(kpi_latest$ltfu_n, if (is.null(kpi_prev)) NA else kpi_prev$ltfu_n))`
+:::
+
+## Row
+
+### Column {width="55%"}
+
+```{r}
+#| title: !expr paste0("Tren Pasien TB · ", min(years), "–", max(years))
+p_cases_year
+```
+
+### Column {width="45%"}
+
+```{r}
+#| title: !expr paste0("Hasil Akhir Pengobatan · ", latest_year)
+p_outcome_latest
+```
+
+# Tren
+
+## Row
+
+### Column {.tabset}
+
+```{r}
+#| title: "Tren Hasil Pengobatan"
+#| fig-height: 6
+p_outcome_trend
+```
+
+```{r}
+#| title: "Tren Bulanan"
+#| fig-width: 15
+#| fig-height: 6.5
+p_cases_month
+```
+
+```{r}
+#| title: "Detail Seluruh Puskesmas"
+#| fig-width: 18
+#| fig-height: 8.4
+#| out-width: "100%"
+p_pusk_outcome
+```
+
+# Hasil Pengobatan
+
+## Row
+
+### Column {width="55%"}
+
+```{r}
+#| title: "Komposisi Hasil Akhir Pengobatan"
+#| fig-height: 6
+p_outcome_composition
+```
+
+### Column {width="45%"}
+
+```{r}
+#| title: "Tren Keberhasilan Pengobatan*"
+#| fig-height: 6
+p_success_trend
+```
+
+# Puskesmas
+
+## Row
+
+### Column {width="42%"}
+
+```{r}
+#| title: !expr paste0("Jumlah Pasien per Puskesmas · ", latest_year)
+#| fig-height: 8.5
+p_pusk_latest
+```
+
+### Column {width="58%"}
+
+```{r}
+#| title: "Heatmap Keberhasilan"
+#| fig-height: 8.5
+p_heat_success
+```
+
+# Peta
+
+## Row
+
+### Column {.tabset}
+
+```{r}
+#| title: !expr paste0("Jumlah Pasien · ", latest_year)
+#| fig-width: 15
+#| fig-height: 7.4
+#| out-width: "100%"
+p_map_count_pair
+```
+
+```{r}
+#| title: !expr paste0("Keberhasilan Pengobatan · ", latest_year)
+#| fig-width: 15
+#| fig-height: 7.4
+#| out-width: "100%"
+p_map_success_pair
+```
+
+```{r}
+#| title: !expr paste0("Putus Berobat / LTFU (%) · ", latest_year)
+#| fig-width: 15
+#| fig-height: 7.4
+#| out-width: "100%"
+p_map_ltfu_pair
+```
+
+```{r}
+#| title: !expr paste0("Meninggal (%) · ", latest_year)
+#| fig-width: 15
+#| fig-height: 7.4
+#| out-width: "100%"
+p_map_death_pair
+```
+
+# Profil
+
+## Row
+
+### Column {width="50%"}
+
+```{r}
+#| title: !expr paste0("Kelompok Umur · ", latest_year)
+#| fig-height: 4.9
+p_age
+```
+
+### Column {width="50%"}
+
+```{r}
+#| title: !expr paste0("Jenis Kelamin · ", latest_year)
+#| fig-height: 4.9
+p_sex
+```
+
+## Row
+
+### Column {width="50%"}
+
+```{r}
+#| title: "Tren Tipe Diagnosis"
+#| fig-height: 4.9
+p_diagnosis
+```
+
+### Column {width="50%"}
+
+```{r}
+#| title: "Tren Lokasi Anatomi TB"
+#| fig-height: 4.9
+p_anatomy
+```
+
+# Tentang
+
+## Row {.flow}
+
+::: card
+::: card-header
+Tentang Dashboard
+:::
+::: card-body
+
+Dashboard ini merangkum data surveilans tuberkulosis periode **2021–2025** untuk melihat tren pasien, hasil akhir pengobatan, variasi antar-Puskesmas, distribusi kecamatan, dan profil pasien.
+
+Halaman **Puskesmas** khusus menampilkan fasilitas dengan jenis faskes Puskesmas. Halaman lainnya menggunakan seluruh pasien sesuai data sumber.
+:::
+:::
+
+::: card
+::: card-header
+Definisi Indikator
+:::
+::: card-body
+
+**Keberhasilan pengobatan*** dihitung sebagai pasien dengan hasil akhir **Sembuh + Pengobatan Lengkap**, dibagi seluruh pasien yang memiliki hasil akhir pengobatan tercatat.
+
+Jumlah pasien pada dashboard menunjukkan **kasus tercatat**. Angka ini tidak sama dengan insidensi atau risiko populasi tanpa denominator penduduk yang sesuai.
+:::
+:::
+
+::: card
+::: card-header
+Peta & Privasi
+:::
+::: card-body
+
+Peta menampilkan **11 kecamatan di Kota Padang** berdasarkan batas administratif pada GeoJSON. Warna menunjukkan nilai indikator pada masing-masing kecamatan; area tanpa data ditampilkan sebagai nilai tidak tersedia.
+
+Dashboard hanya menampilkan informasi agregat. Variabel identitas seperti **nama pasien** dan **alamat lengkap** dikeluarkan dari data yang digunakan untuk visualisasi.
+:::
+:::
