@@ -1,10 +1,10 @@
 {
   "version": 1,
   "locale": "en_US",
-  "platform": "4.6.1",
+  "platform": "4.6.0",
   "metadata": {
     "appmode": "quarto-static",
-    "primary_rmd": "dashboard-project.qmd",
+    "primary_rmd": "tb-dashboard-v5-3.qmd",
     "primary_html": null,
     "content_category": null,
     "has_parameters": false
@@ -73,7 +73,7 @@
         "Maintainer": "Brian Ripley <Brian.Ripley@R-project.org>",
         "Repository": "CRAN",
         "Date/Publication": "2025-01-01 10:25:36 UTC",
-        "Built": "R 4.6.1; aarch64-apple-darwin23; 2026-06-25 21:54:07 UTC; unix"
+        "Built": "R 4.6.0; aarch64-apple-darwin23; 2026-04-25 08:58:51 UTC; unix"
       }
     },
     "MASS": {
@@ -102,7 +102,7 @@
         "Maintainer": "Brian Ripley <Brian.Ripley@R-project.org>",
         "Repository": "CRAN",
         "Date/Publication": "2025-02-28 17:44:52 UTC",
-        "Built": "R 4.6.1; aarch64-apple-darwin23; 2026-06-25 21:54:07 UTC; unix"
+        "Built": "R 4.6.0; aarch64-apple-darwin23; 2026-04-25 08:58:51 UTC; unix"
       }
     },
     "R6": {
@@ -631,7 +631,7 @@
         "Maintainer": "Brian Ripley <Brian.Ripley@R-project.org>",
         "Repository": "CRAN",
         "Date/Publication": "2025-01-01 10:25:33 UTC",
-        "Built": "R 4.6.1; aarch64-apple-darwin23; 2026-06-25 21:54:10 UTC; unix"
+        "Built": "R 4.6.0; aarch64-apple-darwin23; 2026-04-25 08:58:54 UTC; unix"
       }
     },
     "classInt": {
@@ -3786,6 +3786,12 @@
   "files": {
     "_quarto.yml": {
       "checksum": "4c932b78a4742469ae6b09472d037853"
+    },
+    ".posit/publish/dashboard-TB-project-KK04.toml": {
+      "checksum": "d17492781019ca380a4ab84945d9e0f9"
+    },
+    ".posit/publish/deployments/deployment-GK2M.toml": {
+      "checksum": "834a82b68a5f0d9dccd5ed919e581e64"
     },
     "assets/styles.scss": {
       "checksum": "9242148b02335f2cabbada0d5025295e"
